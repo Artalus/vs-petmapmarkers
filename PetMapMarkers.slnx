@@ -1,0 +1,4 @@
+<Solution>
+  <Project Path="PetMapMarkers/PetMapMarkers.csproj" />
+  <Project Path="ZZCakeBuild/CakeBuild.csproj" />
+</Solution>
