@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using PetAI;
 using Vintagestory.API.Common;
 using Vintagestory.API.Common.Entities;
+using Vintagestory.API.MathTools;
 using Vintagestory.API.Server;
 using Vintagestory.GameContent;
 
@@ -14,6 +15,8 @@ public class PetTracker
 
     private readonly ICoreServerAPI sapi;
     private readonly Dictionary<long, TrackedPet> tracked = [];
+    private readonly HashSet<string> dirtyOwners = [];
+    private WaypointMapLayer? layer = null;
 
     // TODO: support reloading config without restarting server (configlib json api?)
     private readonly ModConfig cfg;
@@ -44,8 +47,9 @@ public class PetTracker
     {
         try
         {
-            var snapshot = new List<TrackedPet>(tracked.Values);
-            foreach (var pet in snapshot)
+            // layers become active even later than Start()
+            layer ??= WaypointUtil.GetWaypointLayer(sapi);
+            foreach (var pet in tracked.Values)
             {
                 if (
                     sapi.World.LoadedEntities.TryGetValue(pet.EntityId, out var entity)
@@ -60,10 +64,28 @@ public class PetTracker
                     else if (!pet.WasDowned && isDowned)
                         HandlePetDowned(pet);
                     pet.WasDowned = isDowned;
+
+                    // update mutable fields
+                    pet.LastKnownPosition = entity.Pos.XYZ;
+                    pet.Name = entity.GetName();
                 }
                 else
                 {
+                    if (pet.IsLoaded)
+                        LogError(
+                            $"Pet id={pet.EntityId} not found in loaded entities; did OnEntityDespawn not fire?!"
+                        );
                     pet.IsLoaded = false;
+                }
+                if (layer != null)
+                {
+                    SyncWaypoints();
+                    WaypointUtil.ResendWaypointsToAll(layer, sapi, dirtyOwners);
+                    dirtyOwners.Clear();
+                }
+                else
+                {
+                    LogError("Waypoint layer is null in OnTick, how >:(");
                 }
             }
         }
@@ -108,10 +130,13 @@ public class PetTracker
 
     private void OnEntityDespawn(Entity entity, EntityDespawnData data)
     {
-        if (!tracked.TryGetValue(entity.EntityId, out var pet))
-            return;
         try
         {
+            if (!tracked.TryGetValue(entity.EntityId, out var pet))
+                return;
+
+            LogTrace($"Despawned pet id={entity.EntityId} name={pet.Name} reason={data.Reason}");
+
             if (
                 data.Reason
                 is EnumDespawnReason.OutOfRange
@@ -158,6 +183,7 @@ public class PetTracker
         if (isTaming && !cfg.TrackTamingPets)
             return;
 
+        string owner = tameable.OwnerId;
         string petName = entity.GetName();
         bool isDowned = IsDowned(entity);
 
@@ -166,10 +192,12 @@ public class PetTracker
             pet = new TrackedPet()
             {
                 EntityId = entity.EntityId,
-                OwnerUid = tameable.OwnerId,
+                OwnerUid = owner,
+                WaypointUid = WaypointUidFor(entity),
                 Name = petName,
                 WasDowned = isDowned,
                 IsLoaded = true,
+                LastKnownPosition = entity.Pos.XYZ,
             };
 
             tracked[entity.EntityId] = pet;
@@ -190,15 +218,110 @@ public class PetTracker
 
     private void HandlePetDowned(TrackedPet pet)
     {
-        pet.SavedColor ??= cfg.DefaultColor;
-        LogTrace($"Pet downed id={pet.EntityId} name={pet.Name} owner={pet.OwnerId}");
-        // TODO: notify clients to update waypoint color/pinned
+        try
+        {
+            var layer = WaypointUtil.GetWaypointLayer(sapi);
+            var wp = WaypointUtil.FindWaypointByGuid(layer, pet.WaypointUid);
+
+            if (wp != null)
+            {
+                pet.SavedColor = wp.Color;
+                pet.SavedPinned = wp.Pinned;
+                wp.Color = ModConfig.ColorStringToArgb(cfg.DownedColor);
+                wp.Pinned = true;
+                dirtyOwners.Add(pet.OwnerUid);
+            }
+
+            LogTrace($"Pet downed id={pet.EntityId} name='{pet.Name}' owner={pet.OwnerUid}");
+        }
+        catch (Exception e)
+        {
+            LogError($"exception in OnPetDowned: {e}");
+            throw;
+        }
     }
 
     private void HandlePetHealed(TrackedPet pet)
     {
-        LogTrace($"Pet healed id={pet.EntityId} name={pet.Name} owner={pet.OwnerId}");
-        // TODO: notify clients to restore waypoint color/pinned using pet.SavedColor/pet.SavedPinned
+        try
+        {
+            var layer = WaypointUtil.GetWaypointLayer(sapi);
+            var wp = WaypointUtil.FindWaypointByGuid(layer, pet.WaypointUid);
+
+            if (wp != null)
+            {
+                wp.Color = pet.SavedColor ?? ModConfig.ColorStringToArgb(cfg.DefaultColor);
+                wp.Pinned = pet.SavedPinned ?? false;
+                pet.SavedColor = null;
+                pet.SavedPinned = null;
+                dirtyOwners.Add(pet.OwnerUid);
+            }
+
+            LogTrace($"Pet healed id={pet.EntityId} name='{pet.Name}' owner={pet.OwnerUid}");
+        }
+        catch (Exception e)
+        {
+            LogError($"exception in OnPetHealed: {e}");
+            throw;
+        }
+    }
+
+    private void SyncWaypoints()
+    {
+        // layer can be null if the map has not fully initialized upon our first tick
+        if (layer == null)
+            return;
+
+        foreach (var pet in tracked.Values)
+        {
+            if (!pet.IsLoaded)
+                continue;
+
+            var wp = WaypointUtil.FindWaypointByGuid(layer, pet.WaypointUid);
+            var pos = pet.LastKnownPosition ?? new Vec3d(0, 0, 0);
+            var title = pet.Name;
+            if (wp == null)
+            { // waypoint missing - create it
+                var color = ModConfig.ColorStringToArgb(cfg.DefaultColor);
+                var pinned = false;
+                if (pet.WasDowned)
+                {
+                    color = ModConfig.ColorStringToArgb(cfg.DownedColor);
+                    pinned = true;
+                }
+
+                var newWp = new Waypoint()
+                {
+                    Guid = pet.WaypointUid,
+                    Title = title,
+                    Position = pos,
+                    Icon = cfg.DefaultIcon,
+                    Pinned = pinned,
+                    OwningPlayerUid = pet.OwnerUid,
+                    Color = color,
+                };
+
+                // NOTE: .AddWaypoint() requires a player entity to exist in world.
+                // Add directly to list since this code *will* run upon starting server with this
+                // mod for the very first time, when no players are present.
+                layer.Waypoints.Add(newWp);
+                LogTrace($"Created waypoint for {pet.Name} (guid={newWp.Guid})");
+            }
+            else
+            { // waypoint exists - update it
+                if (wp.Position != pos)
+                {
+                    wp.Position = pos;
+                    dirtyOwners.Add(pet.OwnerUid);
+                }
+                if (wp.Title != title)
+                {
+                    wp.Title = title;
+                    dirtyOwners.Add(pet.OwnerUid);
+                }
+                // color and pin dirtying is handled in OnDowned/Healed callbacks
+            }
+        }
     }
 
     private void LogNotification(string message)
@@ -224,6 +347,16 @@ public class PetTracker
         return b.HealthState != EnumEntityHealthState.Normal;
     }
 
+    public static string WaypointUidFor(long id)
+    {
+        return $"petmarker-{id}";
+    }
+
+    public static string WaypointUidFor(Entity entity)
+    {
+        return WaypointUidFor(entity.EntityId);
+    }
+
     public IEnumerable<Entity> GetTrackedEntities()
     {
         foreach (var pet in tracked.Values)
@@ -242,8 +375,10 @@ public class TrackedPet
     public required long EntityId;
     public required string OwnerUid;
     public required string Name;
+    public required string WaypointUid;
     public bool WasDowned;
     public bool IsLoaded;
     public int? SavedColor;
     public bool? SavedPinned;
+    public Vec3d? LastKnownPosition;
 }

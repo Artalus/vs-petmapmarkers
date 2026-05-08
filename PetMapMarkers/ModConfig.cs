@@ -1,3 +1,5 @@
+using System.Drawing;
+
 namespace PetMapMarkers;
 
 public class ModConfig
@@ -15,4 +17,11 @@ public class ModConfig
 
     // full world scan interval in minutes; -1 to disable
     public int FullScanMinutes { get; set; } = 5;
+
+    public static int ColorStringToArgb(string nameOrHex)
+    {
+        var c = ColorTranslator.FromHtml(nameOrHex);
+        c = Color.FromArgb(255, c.R, c.G, c.B);
+        return c.ToArgb();
+    }
 }

@@ -1,5 +1,6 @@
 using System;
 using Vintagestory.API.Common;
+using Vintagestory.API.Common.Entities;
 using Vintagestory.API.MathTools;
 using Vintagestory.API.Server;
 using VinTest;
@@ -33,6 +34,22 @@ internal static class BlockPosExtensions
     {
         var vec = pos.ToLocalPosition(sapi);
         return Math.Abs(vec.X - x) <= tolerance && Math.Abs(vec.Z - z) <= tolerance;
+    }
+}
+
+internal static class EntityExtensions
+{
+    internal static string LogTitle(this Entity entity)
+    {
+        return $"{entity.EntityId} {entity.Code.Path} {entity.GetName()}";
+    }
+}
+
+internal static class ServerExtensions
+{
+    internal static void LogTest(this ICoreServerAPI sapi, string message)
+    {
+        sapi.Logger.VerboseDebug($"[PetMapMarkersTest] {message}");
     }
 }
 
