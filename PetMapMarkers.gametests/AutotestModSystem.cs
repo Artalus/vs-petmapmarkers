@@ -11,7 +11,7 @@ public class AutotestModSystem : GametestModsystemBase
 
     protected override object[] CreateSuites(IServerPlayer player)
     {
-        int stepMs = 200;
+        int stepMs = SApi.ModLoader.GetModSystem<PetMapMarkersModSystem>().Tracker.IntervalMs * 2;
         return [new PetMarkerTestCases(SApi, player, stepMs, ChunkLoadMs)];
     }
 }

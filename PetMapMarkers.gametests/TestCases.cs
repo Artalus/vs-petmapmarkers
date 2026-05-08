@@ -14,4 +14,18 @@ public class PetMarkerTestCases(
 )
 {
     readonly TestActions actions = new(sapi, player);
+
+    [GameTest]
+    public IEnumerable<TestStep> NearbyPetsAreTracked()
+    {
+        var chain = new TestChain()
+            .EnsurePlayerAround(actions, x: 0, z: 0, wait: chunkloadMs)
+            .Wait(stepMs); // wait for initial tracker update
+        foreach (var petName in new[] { "Wolfdog (pup)", "Volchitsa", "NearbyHuntingDog" })
+            chain.Assert(
+                $"* {petName} should be tracked",
+                () => actions.Tracker.GetTrackedEntities().Any(e => e?.GetName() == petName)
+            );
+        return chain;
+    }
 }

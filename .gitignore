@@ -1,5 +1,6 @@
 Directory.Build.props
 Directory.Build.targets
+Directory.Solution.props
 /gamedata/
 
 # Created by https://www.toptal.com/developers/gitignore/api/csharp,visualstudio,visualstudiocode,rider
