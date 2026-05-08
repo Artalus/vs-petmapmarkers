@@ -1,0 +1,9 @@
+{
+  "type": "code",
+  "modid": "petmapmarkers-gametests",
+  "name": "PetMapMarkers Test Suite",
+  "version": "0.0.0",
+  "dependencies": {
+    "petmapmarkers": ""
+  }
+}

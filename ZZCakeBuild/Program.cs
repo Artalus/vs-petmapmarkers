@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using Cake.Common;
 using Cake.Common.IO;
@@ -6,11 +7,13 @@ using Cake.Common.Tools.DotNet;
 using Cake.Common.Tools.DotNet.Clean;
 using Cake.Common.Tools.DotNet.Publish;
 using Cake.Core;
+using Cake.Core.Diagnostics;
 using Cake.Frosting;
 using Cake.Json;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using Vintagestory.API.Common;
+using VinTest.Cake;
 
 namespace CakeBuild;
 
@@ -22,10 +25,9 @@ public static class Program
     }
 }
 
-public class BuildContext : FrostingContext
+public class BuildContext : ContextBase
 {
-    public const string ProjectName = "PetMapMarkers";
-    public string BuildConfiguration { get; }
+    public override string ProjectName => "PetMapMarkers";
     public string Version { get; }
     public string Name { get; }
     public bool SkipJsonValidation { get; }
@@ -33,7 +35,6 @@ public class BuildContext : FrostingContext
     public BuildContext(ICakeContext context)
         : base(context)
     {
-        BuildConfiguration = context.Argument("configuration", "Release");
         SkipJsonValidation = context.Argument("skipJsonValidation", false);
         var modInfo = context.DeserializeJsonFromFile<ModInfo>($"../{ProjectName}/modinfo.json");
         Version = modInfo.Version;
@@ -50,7 +51,7 @@ public sealed class ValidateJsonTask : FrostingTask<BuildContext>
         {
             return;
         }
-        var jsonFiles = context.GetFiles($"../{BuildContext.ProjectName}/assets/**/*.json");
+        var jsonFiles = context.GetFiles($"../{context.ProjectName}/assets/**/*.json");
         foreach (var file in jsonFiles)
         {
             try
@@ -76,19 +77,45 @@ public sealed class BuildTask : FrostingTask<BuildContext>
     public override void Run(BuildContext context)
     {
         context.DotNetClean(
-            $"../{BuildContext.ProjectName}/{BuildContext.ProjectName}.csproj",
+            $"../{context.ProjectName}/{context.ProjectName}.csproj",
             new DotNetCleanSettings { Configuration = context.BuildConfiguration }
         );
 
         context.DotNetPublish(
-            $"../{BuildContext.ProjectName}/{BuildContext.ProjectName}.csproj",
+            $"../{context.ProjectName}/{context.ProjectName}.csproj",
             new DotNetPublishSettings { Configuration = context.BuildConfiguration }
         );
     }
 }
 
+[TaskName("RunGameTests")]
+[IsDependentOn(typeof(ValidateJsonTask))]
+public sealed class RunGameTestsTask : GameTestsTaskBase<BuildContext>
+{
+    protected override string[] AdditionalLogCapture => ["[PetMapMarkersTest]", "[PetMapMarkers]"];
+    protected override IEnumerable<(string Pattern, LogLevel? TargetLevel)> LogSuppressions =>
+        [
+            // petai@4.0.3 & wolftaming@4.1.4 are known to contain suboptimal patches
+            (@"Patch \d+ in (wolftaming|petai):.+not found\. Hint:", null),
+        ];
+
+    protected override void Prepare(BuildContext context)
+    {
+        var configDir = Path.Combine(context.DataPath, "ModConfig");
+        context.EnsureDirectoryExists(configDir);
+        File.WriteAllText(
+            Path.Combine(configDir, "petmapmarkersconfig.json"),
+            @"{
+                ""DefaultColor"": ""#00ff00"",
+                ""DownedColor"": ""red"",
+                ""UpdateIntervalSeconds"": 0.2
+            }"
+        );
+    }
+}
+
 [TaskName("Package")]
-[IsDependentOn(typeof(BuildTask))]
+[IsDependentOn(typeof(RunGameTestsTask))]
 public sealed class PackageTask : FrostingTask<BuildContext>
 {
     public override void Run(BuildContext context)
@@ -97,24 +124,24 @@ public sealed class PackageTask : FrostingTask<BuildContext>
         context.CleanDirectory("../Releases");
         context.EnsureDirectoryExists($"../Releases/{context.Name}");
         context.CopyFiles(
-            $"../{BuildContext.ProjectName}/bin/{context.BuildConfiguration}/Mods/mod/publish/*",
+            $"../{context.ProjectName}/bin/{context.BuildConfiguration}/Mods/mod/publish/*",
             $"../Releases/{context.Name}"
         );
-        if (context.DirectoryExists($"../{BuildContext.ProjectName}/assets"))
+        if (context.DirectoryExists($"../{context.ProjectName}/assets"))
         {
             context.CopyDirectory(
-                $"../{BuildContext.ProjectName}/assets",
+                $"../{context.ProjectName}/assets",
                 $"../Releases/{context.Name}/assets"
             );
         }
         context.CopyFile(
-            $"../{BuildContext.ProjectName}/modinfo.json",
+            $"../{context.ProjectName}/modinfo.json",
             $"../Releases/{context.Name}/modinfo.json"
         );
-        if (context.FileExists($"../{BuildContext.ProjectName}/modicon.png"))
+        if (context.FileExists($"../{context.ProjectName}/modicon.png"))
         {
             context.CopyFile(
-                $"../{BuildContext.ProjectName}/modicon.png",
+                $"../{context.ProjectName}/modicon.png",
                 $"../Releases/{context.Name}/modicon.png"
             );
         }
