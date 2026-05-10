@@ -1,5 +1,6 @@
 using System;
 using System.Linq;
+using PetAI;
 using Vintagestory.API.Common;
 using Vintagestory.API.Common.Entities;
 using Vintagestory.API.MathTools;
@@ -71,6 +72,59 @@ internal class TestActions(ICoreServerAPI sapi, IServerPlayer player)
         sapi.LogTest($"Verify if pet '{name}' is downed");
         var entity = GetTrackedPetByName(name);
         return PetTracker.IsDowned(entity);
+    }
+
+    internal void TamePartially(Entity entity, string ownerUid, float progress)
+    {
+        sapi.LogTest(
+            $"Partially taming pet '{entity.LogTitle()}' to owner {ownerUid} with progress {progress:P0}"
+        );
+        var tameable =
+            entity.GetBehavior<EntityBehaviorTameable>()
+            ?? throw new Exception($"Entity {entity.LogTitle()} is not tameable");
+        tameable.DomesticationLevel = DomesticationLevel.TAMING;
+        tameable.OwnerId = ownerUid;
+        tameable.DomesticationProgress = progress;
+    }
+
+    internal void TameFully(Entity entity, string ownerUid)
+    {
+        sapi.LogTest($"Fully taming pet '{entity.LogTitle()}' to owner {ownerUid}");
+        var tameable =
+            entity.GetBehavior<EntityBehaviorTameable>()
+            ?? throw new Exception($"Entity {entity.LogTitle()} is not tameable");
+        tameable.DomesticationLevel = DomesticationLevel.DOMESTICATED;
+        tameable.OwnerId = ownerUid;
+        tameable.Obedience = 1f;
+    }
+
+    internal void Abandon(Entity entity)
+    {
+        sapi.LogTest($"Abandoning pet '{entity.LogTitle()}'");
+        var tameable =
+            entity.GetBehavior<EntityBehaviorTameable>()
+            ?? throw new Exception($"Entity {entity.LogTitle()} is not tameable");
+        tameable.DomesticationLevel = DomesticationLevel.WILD;
+        tameable.OwnerId = null;
+        tameable.DomesticationProgress = 0f;
+        tameable.Obedience = 0f;
+    }
+
+    internal Entity Spawn(string code, int x, int y, int z, string? name = null)
+    {
+        sapi.LogTest($"Spawning entity '{code}' at {x} {y} {z} with name '{name}'");
+        var entityType =
+            sapi.World.GetEntityType(new AssetLocation(code))
+            ?? throw new Exception($"Failed to load entity type for code '{code}'");
+        var entity =
+            sapi.World.ClassRegistry.CreateEntity(entityType)
+            ?? throw new Exception($"Failed to create entity for code '{code}'");
+        entity.Pos.SetPos(new BlockPos(x, y, z).ToGlobalPosition(sapi));
+        sapi.World.SpawnEntity(entity);
+        if (name != null)
+            Rename(entity, name);
+        sapi.LogTest($"Spawned entity {entity.LogTitle()}");
+        return entity;
     }
 
     private Waypoint? FindWaypoint(long entityId)

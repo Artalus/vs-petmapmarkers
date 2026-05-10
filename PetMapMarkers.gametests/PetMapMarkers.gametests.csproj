@@ -35,8 +35,7 @@
       <Private>false</Private>
     </ProjectReference>
     <ProjectReference Include="$(PETAI_PROJECT)/petai.csproj">
-      <!-- gametests do NOT need petai explicitly, but without re-marking it as private MSbuild
-      copies the dlls into output directory, which borks VS -->
+      <!-- same -->
       <Private>false</Private>
     </ProjectReference>
   </ItemGroup>

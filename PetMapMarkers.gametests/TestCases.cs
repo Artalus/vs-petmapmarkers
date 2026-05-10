@@ -1,6 +1,10 @@
+using System;
 using System.Collections.Generic;
 using System.Linq;
+using PetAI;
+using Vintagestory.API.Common;
 using Vintagestory.API.Common.Entities;
+using Vintagestory.API.MathTools;
 using Vintagestory.API.Server;
 using Vintagestory.GameContent;
 using VinTest;
@@ -198,5 +202,86 @@ public class PetMarkerTestCases(
                 () => actions.GetWaypointFor(target).Logged().Waypoint?.Title == renamedName
             )
             .Do(() => target.GetBehavior<EntityBehaviorNameTag>()?.SetName(originalName));
+    }
+
+    [GameTest]
+    public IEnumerable<TestStep> TamingAndAbandoningUpdateWaypoint()
+    {
+        const string wildName = "German shepherd (male)";
+        Entity target = null!;
+        return new TestChain()
+            .EnsurePlayerAround(actions, x: 20, z: -100, wait: chunkloadMs)
+            .Do(() => target = actions.GetEntityByName(wildName))
+            .Assert(
+                "wild pet has no waypoint",
+                () => actions.GetWaypointFor(target).Logged().Missing
+            )
+            .Do(() => actions.TameFully(target, player.PlayerUID))
+            .Wait(stepMs)
+            .Assert(
+                "waypoint should appear after tame",
+                () => actions.GetWaypointFor(target).Logged().Exists
+            )
+            .Do(() => actions.Abandon(target))
+            .Wait(stepMs)
+            .Assert(
+                "waypoint should disappear after abandon",
+                () => actions.GetWaypointFor(target).Logged().Missing
+            )
+            .Do(() => actions.TamePartially(target, player.PlayerUID, progress: 0.25f))
+            .Wait(stepMs)
+            .Assert(
+                "waypoint should reappear after retame partial",
+                () => actions.GetWaypointFor(target).Logged().Exists
+            )
+            .Do(() => target.GetBehavior<EntityBehaviorTameable>()!.DomesticationProgress += 0.5f)
+            .Wait(stepMs)
+            .Assert(
+                "waypoint should still exist after taming bump",
+                () => actions.GetWaypointFor(target).Exists
+            );
+        // TODO: test gradual taming->domesticated progression?
+        // would need to trigger EntityBehaviorTameable.OnInteract and reset cooldowns
+    }
+
+    [GameTest]
+    public IEnumerable<TestStep> WaypointChangesOnTamingVariantSwap()
+    {
+        Entity wolf = null!;
+        long oldEntityId = 0;
+
+        const string target = "SwapTestWolf";
+        return new TestChain()
+            .EnsurePlayerAround(actions, x: 0, z: 0, wait: chunkloadMs)
+            .Do(() =>
+            {
+                wolf = actions.Spawn("wolf-eurasian-baby-male", 1, 5, 1, name: target);
+                oldEntityId = wolf.EntityId;
+            })
+            .Wait(stepMs)
+            .Do(() =>
+            {
+                sapi.LogTest("Trigger variant swap by magic bone");
+                var magicboneItem =
+                    sapi.World.GetItem(new AssetLocation("petai:magicbone"))
+                    ?? throw new Exception("Failed to load magicbone item");
+                var slot = new DummySlot(new ItemStack(magicboneItem));
+                // magicbone forces spawnTameVariant(), see EntityBehaviorTameable.
+                // This despawns wolfbaby (EnumDespawnReason.Expire) and spawns a wolftaming:dog-wolf-pup
+                wolf.OnInteract(player.Entity, slot, Vec3d.Zero, EnumInteractMode.Interact);
+            })
+            .Wait(stepMs)
+            .Assert(
+                "tamed pet should have new EntityId after variant swap",
+                () => actions.GetTrackedPetByName(target).EntityId != oldEntityId
+            )
+            .Assert(
+                "waypoint should exist for new entity after variant swap",
+                () => actions.GetWaypointFor(target).Logged().Exists
+            )
+            .Assert(
+                "old waypoint should not exist after variant swap",
+                () => actions.GetWaypointFor(oldEntityId, $"old {target} id").Logged().Missing
+            );
     }
 }

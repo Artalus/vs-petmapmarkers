@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using PetAI;
 using Vintagestory.API.Common;
 using Vintagestory.API.Common.Entities;
@@ -16,6 +17,7 @@ public class PetTracker
     private readonly ICoreServerAPI sapi;
     private readonly Dictionary<long, TrackedPet> tracked = [];
     private readonly HashSet<string> dirtyOwners = [];
+    private readonly HashSet<long> tameCandidates = [];
     private WaypointMapLayer? layer = null;
 
     // TODO: support reloading config without restarting server (configlib json api?)
@@ -28,6 +30,8 @@ public class PetTracker
         IntervalMs = (int)(cfg.UpdateIntervalSeconds * 1000);
 
         sapi.Event.OnEntityLoaded += OnEntityLoaded;
+        // despite what doc says, loaded event does not fire upon something new spawning
+        sapi.Event.OnEntitySpawn += OnEntitySpawn;
         sapi.Event.OnEntityDespawn += OnEntityDespawn;
 
         sapi.Event.RegisterGameTickListener(OnTick, IntervalMs);
@@ -49,6 +53,21 @@ public class PetTracker
         {
             // layers become active even later than Start()
             layer ??= WaypointUtil.GetWaypointLayer(sapi);
+            // toarray avoids directly mutating collection while iterating
+            foreach (var tamedId in tameCandidates.ToArray())
+            {
+                if (
+                    sapi.World.LoadedEntities.TryGetValue(tamedId, out var entity)
+                    && entity != null
+                )
+                {
+                    if (TryAddPetFromEntity(entity))
+                    {
+                        tameCandidates.Remove(tamedId);
+                    }
+                }
+            }
+
             foreach (var pet in tracked.Values)
             {
                 if (
@@ -120,10 +139,25 @@ public class PetTracker
         try
         {
             TryAddPetFromEntity(entity);
+            RegisterDomesticationWatcher(entity);
         }
         catch (Exception e)
         {
             LogError($"exception in OnEntityLoaded: {e}");
+            throw;
+        }
+    }
+
+    private void OnEntitySpawn(Entity entity)
+    {
+        try
+        {
+            TryAddPetFromEntity(entity);
+            RegisterDomesticationWatcher(entity);
+        }
+        catch (Exception e)
+        {
+            LogError($"exception in OnEntitySpawn: {e}");
             throw;
         }
     }
@@ -170,20 +204,91 @@ public class PetTracker
         }
     }
 
-    private void TryAddPetFromEntity(Entity entity)
+    private void RegisterDomesticationWatcher(Entity entity)
+    {
+        // TODO: we'll end up with this watcher on every drifter! need to filter only potential pets
+        const string petaiDomesticationStatusKey = "domesticationstatus";
+        var watched = entity.WatchedAttributes;
+        watched.RegisterModifiedListener(
+            petaiDomesticationStatusKey,
+            () =>
+            {
+                try
+                {
+                    bool alreadyTracked = tracked.ContainsKey(entity.EntityId);
+                    bool isCandidate = tameCandidates.Contains(entity.EntityId);
+                    string title = $"{entity.EntityId} {entity.Code.Path} {entity.GetName()}";
+                    var tameable = entity.GetBehavior<EntityBehaviorTameable>();
+                    if (alreadyTracked && string.IsNullOrEmpty(tameable?.OwnerId))
+                    {
+                        LogTrace($"Tracked pet {title} lost owner - forget pet");
+                        if (tameable == null)
+                            LogError(
+                                "Domestication status was removed - but this should never happen with PetAI?!"
+                            );
+                        var pet = tracked[entity.EntityId];
+                        bool r = tracked.Remove(entity.EntityId);
+                        if (!r)
+                            LogError("Attempted to remove pet that was not tracked?!");
+                        if (layer != null)
+                        {
+                            var wp = WaypointUtil.FindWaypointByGuid(layer, pet.WaypointUid);
+                            if (wp != null)
+                            {
+                                layer.Waypoints.Remove(wp);
+                                dirtyOwners.Add(pet.OwnerUid);
+                            }
+                            else
+                                LogError("Waypoint not found in domesticationstatus listener");
+                        }
+                        else
+                            LogError(
+                                "Waypoint layer is null in domesticationstatus listener, waypoint not deleted after abandon"
+                            );
+                        return;
+                    }
+                    if (!alreadyTracked && !isCandidate && tameable != null)
+                    {
+                        // PetAI updates the underlying ITreeAttribute quite a few times per tick upon taming.
+                        // Just mark the pet and let OnTick to handle it when the tree stabilizes.
+                        LogTrace(
+                            $"Pet {title} not tracked yet and domestication status is {tameable.DomesticationStatus} - mark to track"
+                        );
+                        tameCandidates.Add(entity.EntityId);
+                    }
+                }
+                catch (Exception e)
+                {
+                    LogError(
+                        $"exception in domesticationstatus listener for entity {entity.EntityId}: {e}"
+                    );
+                    throw;
+                }
+            }
+        );
+    }
+
+    /// <summary>
+    /// Returns true if the entity is successfully tracked
+    /// </summary>
+    private bool TryAddPetFromEntity(Entity entity)
     {
         var tameable = entity.GetBehavior<EntityBehaviorTameable>();
         if (tameable == null)
-            return;
+            return false;
 
         if (tameable.DomesticationLevel == DomesticationLevel.WILD)
-            return;
+            return false;
 
         bool isTaming = tameable.DomesticationLevel == DomesticationLevel.TAMING;
         if (isTaming && !cfg.TrackTamingPets)
-            return;
+            return false;
 
         string owner = tameable.OwnerId;
+        // owner might be null if we happened upon pet in process of initialization
+        if (string.IsNullOrEmpty(owner))
+            return false;
+
         string petName = entity.GetName();
         bool isDowned = IsDowned(entity);
 
@@ -214,6 +319,7 @@ public class PetTracker
                 HandlePetDowned(pet);
             pet.WasDowned = isDowned;
         }
+        return true;
     }
 
     private void HandlePetDowned(TrackedPet pet)
