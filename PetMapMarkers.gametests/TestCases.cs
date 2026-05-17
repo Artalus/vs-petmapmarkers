@@ -6,6 +6,7 @@ using Vintagestory.API.Common;
 using Vintagestory.API.Common.Entities;
 using Vintagestory.API.MathTools;
 using Vintagestory.API.Server;
+using Vintagestory.API.Util;
 using Vintagestory.GameContent;
 using VinTest;
 
@@ -282,6 +283,108 @@ public class PetMarkerTestCases(
             .Assert(
                 "old waypoint should not exist after variant swap",
                 () => actions.GetWaypointFor(oldEntityId, $"old {target} id").Logged().Missing
+            );
+    }
+
+    [GameTest]
+    public IEnumerable<TestStep> WatchingOnlyForTameableEntities()
+    {
+        return new TestChain()
+            .EnsurePlayerAround(actions, x: 0, z: 0, wait: chunkloadMs)
+            .Assert(
+                "all tameable entities should have a watcher",
+                () =>
+                {
+                    var watchedIds = actions.GetWatchedEntityIds();
+                    var tameableLoaded = sapi
+                        .World.LoadedEntities.Values.Where(e =>
+                            e.HasBehavior<EntityBehaviorTameable>()
+                        )
+                        .ToList();
+                    sapi.LogTest($"Tameable: {tameableLoaded.Count}, watched: {watchedIds.Count}");
+                    return tameableLoaded.Count > 0
+                        && tameableLoaded.All(e => watchedIds.Contains(e.EntityId));
+                }
+            )
+            .Assert(
+                "player should not have a watcher",
+                () => !actions.GetWatchedEntityIds().Contains(player.Entity.EntityId)
+            );
+    }
+
+    [GameTest]
+    public IEnumerable<TestStep> WatchersRegisteredOnlyOnce()
+    {
+        Entity wolf = null!;
+        long wolfId = 0;
+        const string petName = "WatcherTestWolf";
+        bool WolfLoaded() => sapi.World.LoadedEntities.ContainsKey(wolfId);
+
+        // By default entities/chunks seem to take about ~15 seconds to despawn.
+        // With ExpediteChunkUnload the chunk should age out within couple ~3s cycles.
+        // Allow 10s to be safe.
+        int despawnDelayMs = 10_000;
+
+        // Ensure wolf spawns in the middle of the chunk to ensure unloading.
+        int faraway = sapi.WorldManager.ChunkSize * 20 + 2;
+        var bp = new BlockPos(faraway, 5, faraway).ToGlobalPosition(sapi);
+        int chunkX = bp.X / sapi.WorldManager.ChunkSize;
+        int chunkZ = bp.Z / sapi.WorldManager.ChunkSize;
+
+        return new TestChain()
+            .EnsurePlayerAround(actions, x: faraway, z: faraway, wait: chunkloadMs)
+            .Do(() =>
+            {
+                wolf = actions.Spawn("wolf-eurasian-baby-male", faraway, 5, faraway, name: petName);
+                wolfId = wolf.EntityId;
+            })
+            .Wait(stepMs)
+            .Assert(
+                "freshly spawned wild wolf should immediately have a watcher",
+                () => actions.GetWatchedEntityIds().Contains(wolfId)
+            )
+            // reload the wolf: teleport away so the chunk unloads, then back.
+            .Do(() => actions.TeleportPlayer(0, 10, 0))
+            // this magic speeds test up from ~20 to ~8s
+            .Do(() => actions.ExpediteChunkUnload(chunkX, chunkZ))
+            .AssertEventually(
+                "wolf despawns after teleporting away",
+                maxMs: despawnDelayMs,
+                breakWhen: () => !WolfLoaded()
+            )
+            // Wait for the chunk thread to flush dirty unloaded chunks to DB, before
+            // triggering reload. ServerSystemUnloadChunks.SaveDirtyUnloadedChunks runs
+            // every 200ms on the chunk thread.
+            .Wait(500)
+            .EnsurePlayerAround(actions, x: faraway, z: faraway, wait: chunkloadMs)
+            .AssertEventually(
+                "wolf loads after teleporting back",
+                maxMs: chunkloadMs,
+                breakWhen: WolfLoaded
+            )
+            // Tame and then abandon to verify the watcher only fires once per modification.
+            // If the watcher was double-registered on reload, Abandon() provokes two watcher calls:
+            // - first removes from tracked (correct), second adds entity back to tameCandidates,
+            // with an empty owner - where it gets stuck forever since TryAddPetFromEntity
+            // rejects empty owners.
+            .Do(() =>
+            {
+                wolf =
+                    sapi.World.LoadedEntities.Get(wolfId)
+                    ?? throw new Exception($"Wolf {wolfId} not found after reload");
+                actions.TamePartially(wolf, player.PlayerUID, 0.5f);
+            })
+            .Wait(stepMs)
+            .Do(() => actions.Abandon(wolf))
+            .Wait(stepMs)
+            .Assert(
+                "abandoned pet should be removed from tameCandidates",
+                () =>
+                {
+                    var candidates = actions.GetTameCandidateIds();
+                    bool stuck = candidates.Contains(wolfId);
+                    return !stuck;
+                }
             );
     }
 }

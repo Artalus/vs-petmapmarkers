@@ -14,11 +14,15 @@ public class PetTracker
 {
     public readonly int IntervalMs;
 
+    public IReadOnlySet<long> WatchedIds => watchers;
+    public IReadOnlySet<long> TameCandidateIds => tameCandidates;
+
     private readonly ICoreServerAPI sapi;
     private readonly Dictionary<long, TrackedPet> tracked = [];
     private readonly HashSet<string> dirtyOwners = [];
     private readonly HashSet<long> tameCandidates = [];
     private WaypointMapLayer? layer = null;
+    private readonly HashSet<long> watchers = [];
 
     // TODO: support reloading config without restarting server (configlib json api?)
     private readonly ModConfig cfg;
@@ -206,7 +210,20 @@ public class PetTracker
 
     private void RegisterDomesticationWatcher(Entity entity)
     {
-        // TODO: we'll end up with this watcher on every drifter! need to filter only potential pets
+        // avoid watching over drifters and players and locust nests
+        if (!entity.HasBehavior<EntityBehaviorTameable>())
+            return;
+        var title = $"{entity.EntityId} {entity.Code.Path} {entity.GetName()}";
+
+        // avoid registering the listener more than once per entity (both OnEntityLoaded
+        // and OnEntitySpawn call this; guard against double-registration on reloads)
+        if (!watchers.Add(entity.EntityId))
+        {
+            LogTrace($"Skipping duplicate domestication watcher for tameable {title}");
+            return;
+        }
+        LogTrace($"Watching over tameable {title}");
+
         const string petaiDomesticationStatusKey = "domesticationstatus";
         var watched = entity.WatchedAttributes;
         watched.RegisterModifiedListener(
@@ -217,7 +234,6 @@ public class PetTracker
                 {
                     bool alreadyTracked = tracked.ContainsKey(entity.EntityId);
                     bool isCandidate = tameCandidates.Contains(entity.EntityId);
-                    string title = $"{entity.EntityId} {entity.Code.Path} {entity.GetName()}";
                     var tameable = entity.GetBehavior<EntityBehaviorTameable>();
                     if (alreadyTracked && string.IsNullOrEmpty(tameable?.OwnerId))
                     {

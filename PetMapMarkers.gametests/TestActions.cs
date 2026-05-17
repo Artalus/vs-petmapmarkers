@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using PetAI;
 using Vintagestory.API.Common;
@@ -33,6 +34,16 @@ internal class TestActions(ICoreServerAPI sapi, IServerPlayer player)
     internal Entity GetEntityByName(string name)
     {
         return TryGetEntityByName(name) ?? throw new Exception($"Entity '{name}' not found");
+    }
+
+    public IReadOnlySet<long> GetWatchedEntityIds()
+    {
+        return Tracker.WatchedIds;
+    }
+
+    public IReadOnlySet<long> GetTameCandidateIds()
+    {
+        return Tracker.TameCandidateIds;
     }
 
     internal void Rename(Entity entity, string newName)
@@ -162,6 +173,48 @@ internal class TestActions(ICoreServerAPI sapi, IServerPlayer player)
     internal void TeleportPlayer(int x, int y, int z)
     {
         Teleport(player.Entity, x, y, z);
+    }
+
+    /// <summary>
+    /// Mark chunk to be naturally unloaded (preserving dirty chunk data like entities to disk,
+    /// before despawning them).
+    /// Do NOT use WorldManager.UnloadChunkColumn() - it bypasses the save and disposes the chunk
+    /// in-memory without writing entities to disk.
+    /// </summary>
+    internal void ExpediteChunkUnload(int chunkX, int chunkZ)
+    {
+        // See VintagestoryLib\Vintagestory.Server\ServerSystemUnloadChunks.cs.
+        var i =
+            sapi.WorldManager.GetMapChunk(chunkX, chunkZ)
+            ?? throw new Exception($"Map chunk ({chunkX},{chunkZ}) not found");
+        var mapChunk =
+            i as Vintagestory.Server.ServerMapChunk
+            ?? throw new Exception($"Map chunk ({chunkX},{chunkZ}) is not a ServerMapChunk");
+        // When <=1, IsOld() returns true for the sake of purposes in
+        // ServerSystemUnloadChunks.FindUnloadableChunkColumnCandidates()
+        mapChunk.UnloadGeneration = 0;
+        sapi.LogTest(
+            $"Expedited chunk unload for ({chunkX},{chunkZ}), starting recurring listener"
+        );
+        /// A single one-shot set is unreliable.
+        /// 1. ServerSystemBlockSimulation.OnSeparateThreadTick runs on the chunk thread and resets
+        /// UnloadGeneration to 5 via MapChunk.MarkFresh().
+        /// 2. InChunkIndex3d (used by BlockSimulation) lags behind ServerPos by one main-thread tick.
+        /// => There is a window where chunk thread keeps marking  fresh even if player is away.
+        long handle = 0;
+        handle = sapi.Event.RegisterGameTickListener(
+            _ =>
+            {
+                if (sapi.WorldManager.GetMapChunk(chunkX, chunkZ) == null)
+                {
+                    sapi.Event.UnregisterGameTickListener(handle);
+                    sapi.LogTest($"Chunk ({chunkX},{chunkZ}) unloaded, stopping expedite listener");
+                    return;
+                }
+                mapChunk.UnloadGeneration = 0;
+            },
+            200
+        );
     }
 
     internal class WaypointForEntity(ICoreServerAPI sapi, string name, Waypoint? waypoint)
