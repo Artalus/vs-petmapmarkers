@@ -23,5 +23,18 @@ public class AutotestModSystem : GametestModsystemBase
         // NPCs remain idle during tests
         api.World.Config.SetBool("runAiTasks", false);
         api.World.Config.SetBool("runAiActivities", false);
+
+        api.Event.PlayerJoin += OnPlayerJoin;
+    }
+
+    // TODO: this should be in VinTest!
+    private void OnPlayerJoin(IServerPlayer player)
+    {
+        player.SetModData("createCharacter", true);
+        // Inform client immediately to avoid waiting on character dialog
+        SApi.Network.GetChannel("charselection")
+            .SendPacket(new CharacterSelectedState { DidSelect = true }, [player]);
+        // Push updated playerdata to client
+        player.BroadcastPlayerData(true);
     }
 }
