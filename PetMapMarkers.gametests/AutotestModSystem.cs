@@ -1,4 +1,6 @@
+using Vintagestory.API.Common;
 using Vintagestory.API.Server;
+using Vintagestory.GameContent;
 using VinTest;
 
 namespace PetMapMarkers.GameTests;
@@ -36,5 +38,18 @@ public class AutotestModSystem : GametestModsystemBase
             .SendPacket(new CharacterSelectedState { DidSelect = true }, [player]);
         // Push updated playerdata to client
         player.BroadcastPlayerData(true);
+    }
+
+    protected override void OnManualModeReady(IServerPlayer player)
+    {
+        // register init command to create all the entities from testcases
+        SApi.ChatCommands.GetOrCreate("init")
+            .WithDescription("Initialize test entities")
+            .RequiresPrivilege(Privilege.chat)
+            .HandleWith(args =>
+            {
+                new PetMarkerTestCases(SApi, player, 0, ChunkLoadMs).InitTestEntities();
+                return TextCommandResult.Success("Test entities initialized");
+            });
     }
 }

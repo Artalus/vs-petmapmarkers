@@ -387,4 +387,50 @@ public class PetMarkerTestCases(
                 }
             );
     }
+
+    internal void InitTestEntities()
+    {
+        // spawns everyone exactly where they should be
+        Entity EnsureSpawned(string code, string? name, int x, int y, int z)
+        {
+            return actions.Spawn(code, x, y, z, name: name);
+        }
+
+        void EnsureTamed(Entity entity)
+        {
+            actions.TameFully(entity, player.PlayerUID);
+        }
+        actions.TeleportPlayer(0, 5, 0);
+
+        // nearby pre-tamed animals around origin
+        var pup = EnsureSpawned("wolftaming:dog-wolf-pup", null, 0, 5, 0);
+        EnsureTamed(pup);
+        var volchitsa = EnsureSpawned(
+            "wolftaming:dog-wolf-female",
+            SavedEntities.Volchitsa,
+            0,
+            5,
+            0
+        );
+        EnsureTamed(volchitsa);
+        var dog = EnsureSpawned("wolftaming:dog-hunting-male", SavedEntities.Dog, 50, 5, 50);
+        EnsureTamed(dog);
+
+        // wild animal for taming/abandon existing
+        EnsureSpawned("wolftaming:dog-shepherd-male", null, 20, 5, -100);
+        // far pet: should not be loaded when player reloads near origin for tests
+        // csharpier-ignore-start
+        sapi.World.RegisterCallback((_) => {
+            actions.TeleportPlayer(-1000, 5, 50);
+            // ensure far chunk is loaded
+            sapi.World.RegisterCallback((_) => {
+                var corgi = EnsureSpawned("wolftaming:dog-corgi-male", SavedEntities.Corgi, -1000, 5, 50);
+                EnsureTamed(corgi);
+                sapi.World.RegisterCallback((_) => {
+                    actions.TeleportPlayer(0, 5, 0);
+                }, chunkloadMs);
+            }, chunkloadMs);
+        }, chunkloadMs);
+        // csharpier-ignore-end
+    }
 }
