@@ -6,6 +6,7 @@ using Vintagestory.API.Common;
 using Vintagestory.API.Common.Entities;
 using Vintagestory.API.MathTools;
 using Vintagestory.API.Server;
+using Vintagestory.API.Util;
 using Vintagestory.GameContent;
 
 namespace PetMapMarkers;
@@ -23,6 +24,14 @@ public class PetTracker
     private readonly HashSet<long> tameCandidates = [];
     private WaypointMapLayer? layer = null;
     private readonly HashSet<long> watchers = [];
+
+    // transient:
+    // - filled synchronously when a tracked pup expires
+    // - drained on the immediately-following SpawnEntity call
+    private readonly Queue<GrowupMemento> pendingGrowups = [];
+
+    // keyed by adult entity ID; filled once adult arrives, drained in TryAddPetFromEntity
+    private readonly Dictionary<long, GrowupMemento> growupByEntityId = [];
 
     // TODO: support reloading config without restarting server (configlib json api?)
     private readonly ModConfig cfg;
@@ -156,6 +165,12 @@ public class PetTracker
     {
         try
         {
+            // BecomeAdult calls Die(Expire) then SpawnEntity synchronously.
+            // Claim memento here before TryAddPetFromEntity runs so it is available when the adult gets tracked later
+            // TODO: fragile, need to match pup to spawning entity
+            if (pendingGrowups.Count > 0 && entity.HasBehavior<EntityBehaviorTameable>())
+                growupByEntityId[entity.EntityId] = pendingGrowups.Dequeue();
+
             TryAddPetFromEntity(entity);
             RegisterDomesticationWatcher(entity);
         }
@@ -196,6 +211,9 @@ public class PetTracker
             // TODO: needs test
             if (data.Reason == EnumDespawnReason.Expire)
             {
+                // BecomeAdult calls Die(Expire) then SpawnEntity synchronously.
+                if (entity.GetBehavior<EntityBehaviorGrow>() != null)
+                    PrepareGrowupMemento(pet);
                 tracked.Remove(entity.EntityId);
                 LogTrace($"Expired - forget pet");
             }
@@ -321,10 +339,23 @@ public class PetTracker
                 LastKnownPosition = entity.Pos.XYZ,
             };
 
+            if (growupByEntityId.TryGetValue(entity.EntityId, out var memento))
+            {
+                growupByEntityId.Remove(entity.EntityId);
+                pet.SavedColor = memento.SavedColor;
+                pet.SavedPinned = memento.SavedPinned;
+                LogNotification(
+                    $"Tracking grown/swapped pet id={pet.EntityId} creature='{entity.Code.Path}' - new guid={pet.WaypointUid}, deleting old={memento.OldWaypointGuid}"
+                );
+            }
+            else
+            {
+                LogNotification(
+                    $"Tracking new pet id={pet.EntityId} creature='{entity.Code.Path}' owner='{pet.OwnerUid}' name='{pet.Name}' down={pet.WasDowned}"
+                );
+            }
+
             tracked[entity.EntityId] = pet;
-            LogNotification(
-                $"Tracking new pet id={pet.EntityId} creature='{entity.Code.Path}' owner='{pet.OwnerUid}' name='{pet.Name}' down={pet.WasDowned}"
-            );
         }
         else
         {
@@ -336,6 +367,61 @@ public class PetTracker
             pet.WasDowned = isDowned;
         }
         return true;
+    }
+
+    private void PrepareGrowupMemento(TrackedPet pet)
+    {
+        int? savedColor = null;
+        bool? savedPinned = null;
+        if (layer != null)
+        {
+            var wp = WaypointUtil.FindWaypointByGuid(layer, pet.WaypointUid);
+            if (wp != null)
+            {
+                // when downed, SavedColor/SavedPinned hold the pre-downed values; prefer those
+                savedColor = pet.SavedColor ?? wp.Color;
+                savedPinned = pet.SavedPinned ?? wp.Pinned;
+                layer.Waypoints.Remove(wp);
+                dirtyOwners.Add(pet.OwnerUid);
+                LogTrace($"Removed old waypoint guid={pet.WaypointUid} for growing pet");
+            }
+        }
+        var memento = new GrowupMemento
+        {
+            SavedColor = savedColor,
+            SavedPinned = savedPinned,
+            OldWaypointGuid = pet.WaypointUid,
+        };
+        // Adult may have already spawned before this Expire despawn event fired.
+        // Search tameCandidates for an entity with the same owner — that is the adult.
+        long adultId = FindGrowupAdultInCandidates(pet.OwnerUid);
+        if (adultId != 0)
+        {
+            growupByEntityId[adultId] = memento;
+            LogTrace(
+                $"Associated grow-up memento with already-spawned adult id={adultId} for pet '{pet.Name}'"
+            );
+        }
+        else
+        {
+            // Fallback: adult has not spawned yet; OnEntitySpawn will claim it.
+            pendingGrowups.Enqueue(memento);
+            LogTrace($"Queued grow-up memento for pet id={pet.EntityId} name='{pet.Name}'");
+        }
+    }
+
+    private long FindGrowupAdultInCandidates(string ownerUid)
+    {
+        foreach (var candidateId in tameCandidates)
+        {
+            if (sapi.World.LoadedEntities.TryGetValue(candidateId, out var candidate))
+            {
+                var status = candidate.GetBehavior<EntityBehaviorTameable>();
+                if (status?.OwnerId == ownerUid)
+                    return candidateId;
+            }
+        }
+        return 0;
     }
 
     private void HandlePetDowned(TrackedPet pet)
@@ -404,12 +490,19 @@ public class PetTracker
             var title = pet.Name;
             if (wp == null)
             { // waypoint missing - create it
-                var color = ModConfig.ColorStringToArgb(cfg.DefaultColor);
-                var pinned = false;
+                // SavedColor/SavedPinned may carry inherited color from grow-up
+                var color = pet.SavedColor ?? ModConfig.ColorStringToArgb(cfg.DefaultColor);
+                var pinned = pet.SavedPinned ?? false;
                 if (pet.WasDowned)
                 {
+                    // keep SavedColor/SavedPinned as restoration target for OnPetHealed
                     color = ModConfig.ColorStringToArgb(cfg.DownedColor);
                     pinned = true;
+                }
+                else
+                {
+                    pet.SavedColor = null;
+                    pet.SavedPinned = null;
                 }
 
                 var newWp = new Waypoint()
@@ -503,4 +596,14 @@ public class TrackedPet
     public int? SavedColor;
     public bool? SavedPinned;
     public Vec3d? LastKnownPosition;
+}
+
+/// <summary>
+/// Remember state of a pup that has expired and possibly was replaced by adult.
+/// </summary>
+class GrowupMemento
+{
+    public int? SavedColor;
+    public bool? SavedPinned;
+    public required string OldWaypointGuid;
 }

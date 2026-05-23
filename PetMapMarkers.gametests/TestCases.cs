@@ -388,6 +388,79 @@ public class PetMarkerTestCases(
             );
     }
 
+    [GameTest]
+    public IEnumerable<TestStep> WaypointPersistsAfterPetGrowsUp()
+    {
+        Entity pup = null!;
+        long pupId = 0;
+        string pupWaypointGuid = "";
+        const string pupName = "GrowingPup";
+        const int customColor = 0x123456;
+
+        var chain = new TestChain()
+            .EnsurePlayerAround(actions, x: 0, z: 0, wait: chunkloadMs)
+            .Do(() =>
+            {
+                pup = actions.Spawn("wolftaming:dog-wolf-pup", 3, 5, 3, name: pupName);
+                pupId = pup.EntityId;
+                actions.TameFully(pup, player.PlayerUID);
+            })
+            .Wait(stepMs)
+            .Do(() =>
+            {
+                var wp = actions.GetWaypointFor(pup).Waypoint;
+                pupWaypointGuid = wp.Guid;
+                wp.Color = customColor;
+            })
+            .Wait(stepMs)
+            .Do(() =>
+            {
+                sapi.LogTest("trigger grow-up");
+                var grow =
+                    pup.GetBehavior<EntityBehaviorGrow>()
+                    ?? throw new Exception("Pup has no EntityBehaviorGrow");
+                grow.HoursToGrow = 0;
+            })
+            .AssertEventually(
+                name: "adult should have spawned with same name and different id",
+                maxMs: 5_000, // TODO: notverified; how much time needs to grow?
+                breakWhen: () => actions.GetEntityByName(pupName).EntityId != pupId
+            )
+            .Assert(
+                "old pup waypoint should be removed after grow-up",
+                () =>
+                {
+                    var layer = WaypointUtil.GetWaypointLayer(sapi);
+                    return WaypointUtil.FindWaypointByGuid(layer, pupWaypointGuid) == null;
+                }
+            )
+            .Assert(
+                "adult should have a waypoint",
+                () => actions.GetWaypointFor(pupName).Logged().Exists
+            )
+            .Assert(
+                "adult waypoint should inherit custom color",
+                () => actions.GetWaypointFor(pupName).Color == customColor
+            )
+            .Assert(
+                "adult waypoint should have different GUID",
+                () => actions.GetWaypointFor(pupName).Waypoint.Guid != pupWaypointGuid
+            )
+            .Assert(
+                "only one waypoint should exist for the grown pet",
+                () =>
+                {
+                    var layer = WaypointUtil.GetWaypointLayer(sapi);
+                    int count = layer.Waypoints.Count(wp =>
+                        wp.Title == pupName && wp.OwningPlayerUid == player.PlayerUID
+                    );
+                    sapi.LogTest($"Waypoints named '{pupName}' for owner: {count}");
+                    return count == 1;
+                }
+            );
+        return chain;
+    }
+
     internal void InitTestEntities()
     {
         // spawns everyone exactly where they should be
