@@ -14,7 +14,11 @@ public class AutotestModSystem : GametestModsystemBase
     protected override object[] CreateSuites(IServerPlayer player)
     {
         int stepMs = SApi.ModLoader.GetModSystem<PetMapMarkersModSystem>().Tracker.IntervalMs * 2;
-        return [new PetMarkerTestCases(SApi, player, stepMs, ChunkLoadMs)];
+        return
+        [
+            new PetMarkerTestCases(SApi, player, stepMs, ChunkLoadMs),
+            new AnimalCagesCompatTestCases(SApi, player, stepMs, ChunkLoadMs),
+        ];
     }
 
     public override void StartServerSide(ICoreServerAPI api)
@@ -50,6 +54,22 @@ public class AutotestModSystem : GametestModsystemBase
             {
                 new PetMarkerTestCases(SApi, player, 0, ChunkLoadMs).InitTestEntities();
                 return TextCommandResult.Success("Test entities initialized");
+            });
+        var parsers = SApi.ChatCommands.Parsers;
+
+        SApi.ChatCommands.GetOrCreate("rename")
+            .WithDescription("Rename whatever player looks at")
+            .RequiresPrivilege(Privilege.chat)
+            .WithArgs(parsers.Word("newName"))
+            .HandleWith(args =>
+            {
+                IServerPlayer player = (IServerPlayer)args.Caller.Player;
+                if (player.CurrentEntitySelection is not { Entity: { } entity })
+                    return TextCommandResult.Error("Not looking at any entity");
+                TestActions actions = new(SApi, player);
+                var to = (string)args[0];
+                actions.Rename(entity, to);
+                return TextCommandResult.Success($"Renamed entity to {to}");
             });
     }
 }

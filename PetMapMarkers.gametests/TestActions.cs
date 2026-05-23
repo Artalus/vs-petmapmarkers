@@ -1,6 +1,8 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
+using System.Text;
 using PetAI;
 using Vintagestory.API.Common;
 using Vintagestory.API.Common.Entities;
@@ -136,6 +138,48 @@ internal class TestActions(ICoreServerAPI sapi, IServerPlayer player)
             Rename(entity, name);
         sapi.LogTest($"Spawned entity {entity.LogTitle()}");
         return entity;
+    }
+
+    /// <summary>
+    /// Cage a pet using the real animalcages small-cage item mechanics.
+    /// The entity is removed from world with PickedUp reason.
+    /// Returns the filled cage ItemStack with the entity stored inside.
+    /// </summary>
+    internal ItemStack CagePet(Entity pet)
+    {
+        sapi.LogTest($"Caging pet {pet.LogTitle()}");
+        var cageBlock =
+            sapi.World.GetBlock(new AssetLocation("animalcages:smallanimalcage-opened"))
+            ?? throw new Exception("Failed to find animalcages:smallanimalcage-opened block");
+        var slot = new DummySlot(new ItemStack(cageBlock));
+        // Block.OnAttackingWith is virtual; at runtime the loaded animalcages mod's
+        // BlockSmallCage override fires, which calls catchEntity() then entity.Die(PickedUp).
+        cageBlock.OnAttackingWith(sapi.World, player.Entity, pet, slot);
+        sapi.LogTest($"Caged - slot item = {slot.Itemstack?.Collectible?.Code}");
+        return slot.Itemstack
+            ?? throw new Exception("Cage slot empty after caging - entity may not be catchable");
+    }
+
+    /// <summary>
+    /// Release a pet from a filled cage ItemStack.
+    /// Replicates BlockEntityAnimalCage.OnBlockBroken: deserializes entity bytes and spawns it.
+    /// </summary>
+    internal void ReleasePetFromCage(ItemStack cageStack, int x, int y, int z)
+    {
+        sapi.LogTest($"Releasing pet from cage at {x} {y} {z}");
+        var bytes =
+            cageStack.Attributes.GetBytes("capturedEntity")
+            ?? throw new Exception("Cage stack has no capturedEntity attribute");
+        var entityClass =
+            cageStack.Attributes.GetString("capturedEntityClass")
+            ?? throw new Exception("Cage stack has no capturedEntityClass attribute");
+        using var ms = new MemoryStream(bytes);
+        using var reader = new BinaryReader(ms, Encoding.UTF8);
+        var entity = sapi.World.ClassRegistry.CreateEntity(entityClass);
+        entity.FromBytes(reader, false);
+        entity.Pos.SetPos(new BlockPos(x, y, z).ToGlobalPosition(sapi));
+        sapi.World.SpawnEntity(entity);
+        sapi.LogTest($"Released entity class={entityClass}");
     }
 
     private Waypoint? FindWaypoint(long entityId)

@@ -28,13 +28,22 @@ public class PetTracker
     // transient:
     // - filled synchronously when a tracked pup expires
     // - drained on the immediately-following SpawnEntity call
-    private readonly Queue<GrowupMemento> pendingGrowups = [];
+    private readonly Queue<PetMemento> pendingGrowups = [];
 
     // keyed by adult entity ID; filled once adult arrives, drained in TryAddPetFromEntity
-    private readonly Dictionary<long, GrowupMemento> growupByEntityId = [];
+    private readonly Dictionary<long, PetMemento> growupByEntityId = [];
+
+    // keyed by entity ID at time of caging; filled when pet is caged, drained when pet is released.
+    private readonly Dictionary<long, PetMemento> caged = [];
 
     // TODO: support reloading config without restarting server (configlib json api?)
     private readonly ModConfig cfg;
+
+    // The original entity ID is stamped into WatchedAttributes[...] when pet gets tracked.
+    // AnimalCages serializes the full entity into the cage item before calling `Die`, so it should
+    // survive cage serialization and can be matched back on release.
+
+    private const string originalIdKey = "petmarker:originalId";
 
     public PetTracker(ICoreServerAPI sapi, ModConfig cfg)
     {
@@ -205,6 +214,10 @@ public class PetTracker
                 pet.IsLoaded = false;
             }
 
+            // AnimalCages does this
+            if (data.Reason == EnumDespawnReason.PickedUp)
+                HandlePetCaged(pet, entity);
+
             // petai taming variant swap - remove from tracking and hope that another entity will spawn soon
             // TODO: but this would cause waypoint duplication + icon and color loss...
             // (unless it maintains entity id somehow)
@@ -339,6 +352,7 @@ public class PetTracker
                 LastKnownPosition = entity.Pos.XYZ,
             };
 
+            long origId = entity.WatchedAttributes.GetLong(originalIdKey, 0);
             if (growupByEntityId.TryGetValue(entity.EntityId, out var memento))
             {
                 growupByEntityId.Remove(entity.EntityId);
@@ -348,6 +362,29 @@ public class PetTracker
                     $"Tracking grown/swapped pet id={pet.EntityId} creature='{entity.Code.Path}' - new guid={pet.WaypointUid}, deleting old={memento.OldWaypointGuid}"
                 );
             }
+            else if (origId != 0 && caged.TryGetValue(origId, out var cagingMemento))
+            {
+                caged.Remove(origId);
+                pet.SavedColor = cagingMemento.SavedColor;
+                pet.SavedPinned = cagingMemento.SavedPinned;
+                // Remove old (black) cage waypoint so SyncWaypoints creates a fresh one with
+                // restored color under the new entity's guid.
+                if (layer != null)
+                {
+                    var oldWp = WaypointUtil.FindWaypointByGuid(
+                        layer,
+                        cagingMemento.OldWaypointGuid
+                    );
+                    if (oldWp != null)
+                    {
+                        layer.Waypoints.Remove(oldWp);
+                        dirtyOwners.Add(owner);
+                    }
+                }
+                LogNotification(
+                    $"Released-from-cage pet id={pet.EntityId} name='{pet.Name}' - new guid={pet.WaypointUid}, removed old={cagingMemento.OldWaypointGuid}"
+                );
+            }
             else
             {
                 LogNotification(
@@ -355,6 +392,9 @@ public class PetTracker
                 );
             }
 
+            // TODO: game save and reload probably will mess this up
+            // Stamp current entity ID so it survives cage serialization and can be matched on release.
+            entity.WatchedAttributes.SetLong(originalIdKey, entity.EntityId);
             tracked[entity.EntityId] = pet;
         }
         else
@@ -386,7 +426,7 @@ public class PetTracker
                 LogTrace($"Removed old waypoint guid={pet.WaypointUid} for growing pet");
             }
         }
-        var memento = new GrowupMemento
+        var memento = new PetMemento
         {
             SavedColor = savedColor,
             SavedPinned = savedPinned,
@@ -422,6 +462,43 @@ public class PetTracker
             }
         }
         return 0;
+    }
+
+    private void HandlePetCaged(TrackedPet pet, Entity entity)
+    {
+        int restorationColor = ModConfig.ColorStringToArgb(cfg.DefaultColor);
+        bool restorationPinned = false;
+        if (layer != null)
+        {
+            var wp = WaypointUtil.FindWaypointByGuid(layer, pet.WaypointUid);
+
+            if (wp != null)
+            {
+                // When downed, SavedColor/SavedPinned hold the pre-downed values; prefer those
+                restorationColor = pet.SavedColor ?? wp.Color;
+                restorationPinned = pet.SavedPinned ?? wp.Pinned;
+                // should become a half-transparent black
+                wp.Color = 0;
+                wp.Pinned = false;
+                dirtyOwners.Add(pet.OwnerUid);
+            }
+            else
+                LogError($"Waypoint not found when caging pet id={pet.EntityId} name='{pet.Name}'");
+        }
+        else
+            LogError("Waypoint layer is null in HandlePetCaged, cannot save waypoint values");
+
+        var memento = new PetMemento
+        {
+            OldWaypointGuid = pet.WaypointUid,
+            SavedColor = restorationColor,
+            SavedPinned = restorationPinned,
+        };
+        caged[entity.EntityId] = memento;
+        tracked.Remove(pet.EntityId);
+        LogTrace(
+            $"Pet caged id={pet.EntityId} code='{entity.Code.Path}' name='{pet.Name}' waypoint dimmed"
+        );
     }
 
     private void HandlePetDowned(TrackedPet pet)
@@ -599,9 +676,10 @@ public class TrackedPet
 }
 
 /// <summary>
-/// Remember state of a pup that has expired and possibly was replaced by adult.
+/// Remember state of a pup that has expired and possibly was replaced by adult,
+/// or a pet that was caged and possibly will be replaced by the same pet upon release.
 /// </summary>
-class GrowupMemento
+class PetMemento
 {
     public int? SavedColor;
     public bool? SavedPinned;
