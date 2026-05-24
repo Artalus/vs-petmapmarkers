@@ -7,9 +7,9 @@
         "Artalus"
     ],
     "description": "Mark pets with waypoints on your minimap.",
-    "version": "0.0.0",
+    "version": "0.1.0",
     "dependencies": {
-        "game": "1.21.0",
-        "petai": "4.0.0"
+        "game": "1.22.0",
+        "petai": "5.0.0"
     }
 }
