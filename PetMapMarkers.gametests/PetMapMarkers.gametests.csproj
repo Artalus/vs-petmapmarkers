@@ -34,8 +34,9 @@
       <!-- petmarker is loaded through mod system and needs not to be copied, just like VS dlls -->
       <Private>false</Private>
     </ProjectReference>
-    <ProjectReference Include="$(PETAI_PROJECT)/petai.csproj">
-      <!-- same -->
+    <!-- tests *build* without direct petai reference but refuse to *load* ingame without it -->
+    <ProjectReference Include="..\petai\PetAI\PetAI.csproj">
+      <!-- same copy logic-->
       <Private>false</Private>
     </ProjectReference>
   </ItemGroup>

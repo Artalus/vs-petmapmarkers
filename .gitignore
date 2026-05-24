@@ -2,6 +2,7 @@ Directory.Build.props
 Directory.Build.targets
 Directory.Solution.props
 /gamedata/
+/petai/
 
 # Created by https://www.toptal.com/developers/gitignore/api/csharp,visualstudio,visualstudiocode,rider
 # Edit at https://www.toptal.com/developers/gitignore?templates=csharp,visualstudio,visualstudiocode,rider

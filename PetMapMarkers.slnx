@@ -2,6 +2,5 @@
   <Project Path="PetMapMarkers/PetMapMarkers.csproj" />
   <Project Path="PetMapMarkers.gametests/PetMapMarkers.gametests.csproj" />
   <Project Path="ZZCakeBuild/CakeBuild.csproj" />
-  <!-- no way to use $(PROPERTIES) here :E -->
-  <Project Path="../petai/PetAI/PetAI.csproj" />
+  <Project Path="./petai/PetAI/PetAI.csproj" />
 </Solution>

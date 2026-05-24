@@ -50,7 +50,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="$(PETAI_PROJECT)/petai.csproj">
+    <ProjectReference Include="..\petai\PetAI\PetAI.csproj">
       <!-- real PetAi will be loaded through VS mod system and does not need to be copied -->
       <Private>false</Private>
     </ProjectReference>

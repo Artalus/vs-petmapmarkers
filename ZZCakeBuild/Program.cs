@@ -115,7 +115,7 @@ public sealed class RunGameTestsTask : GameTestsTaskBase<BuildContext>
 }
 
 [TaskName("Package")]
-[IsDependentOn(typeof(RunGameTestsTask))]
+[IsDependentOn(typeof(BuildTask))]
 public sealed class PackageTask : FrostingTask<BuildContext>
 {
     public override void Run(BuildContext context)
@@ -154,4 +154,5 @@ public sealed class PackageTask : FrostingTask<BuildContext>
 
 [TaskName("Default")]
 [IsDependentOn(typeof(PackageTask))]
+[IsDependentOn(typeof(RunGameTestsTask))]
 public class DefaultTask : FrostingTask { }
