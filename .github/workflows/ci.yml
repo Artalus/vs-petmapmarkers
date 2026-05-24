@@ -1,0 +1,107 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+
+jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      csharp: ${{ steps.filter.outputs.csharp }}
+      typescript: ${{ steps.filter.outputs.typescript }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dorny/paths-filter@v4
+        id: filter
+        with:
+          filters: |
+            csharp:
+              - '.github/workflows/ci.yml'
+              - 'PetMapMarkers/**'
+              - 'PetMapMarkers.gametests/**'
+              - 'PetMapMarkers.ZZCakeBuild/**'
+              - 'dotnet-tools.json'
+            mod:
+              - 'PetMapMarkers/**'
+
+  build:
+    needs: changes
+    if: needs.changes.outputs.csharp == 'true'
+    runs-on: ubuntu-latest
+    env:
+      VS_VERSION: "1.22.2"
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Download Vintage Story DLLs
+        run: |
+          set -exuo pipefail
+          curl -fsSL "https://cdn.vintagestory.at/gamefiles/stable/vs_server_linux-x64_${VS_VERSION}.tar.gz" \
+            -o vs_server.tar.gz
+          mkdir -p vs_install
+          tar -xzf vs_server.tar.gz -C vs_install
+          DLL_DIR=$(find vs_install -name 'VintagestoryAPI.dll' -printf '%h\n' | head -1)
+          DLL_DIR="$(pwd)/$DLL_DIR"
+          ls -la "$DLL_DIR"
+          echo "VINTAGE_STORY=$DLL_DIR" >> "$GITHUB_ENV"
+          # satisfy vintest
+          touch $DLL_DIR/VintageStory.exe
+
+      - name: Download PetAI
+        uses: actions/checkout@v6
+        with:
+          repository: 'G3rste/petai'
+          ref: 'v5.1.1'
+          path: './petai'
+
+      - name: Build
+        env:
+          PETAI_PROJECT: ${{ github.workspace }}/petai/
+        run: dotnet build --configuration Release
+
+      - name: Pack
+        if: needs.changes.outputs.csharp == 'true'
+        run: dotnet run --project ZZCakeBuild --target Package
+
+      - name: Upload artifact
+        if: needs.changes.outputs.csharp == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          path: ./Releases/petmapmarkers*.zip
+          archive: false
+          retention-days: 7
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v8.1.0
+        with:
+          version: "0.11"
+
+      - name: Dependencies
+        shell: bash
+        run: |
+          set -exuo pipefail
+          uv venv
+          uv pip install pre-commit
+          dotnet tool restore
+
+      - name: Pre-commit hooks
+        shell: bash
+        run: |
+          set -exuo pipefail
+          # GHA does not fetch branch names at checkout
+          git fetch
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            uv run pre-commit run --from-ref origin/${{ github.base_ref }} --to-ref HEAD
+          else
+            uv run pre-commit run --all-files
+          fi
